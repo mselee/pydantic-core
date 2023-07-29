@@ -68,3 +68,23 @@ macro_rules! impl_py_gc_traverse {
         }
     };
 }
+
+/// A crude alternative to a "derive" macro to help with building PyGcTraverse implementations
+macro_rules! impl_py_gc_traverse_with_validator {
+    ($name:ty { }) => {
+        impl crate::py_gc::PyGcTraverse for $name {
+            fn py_gc_traverse(&self, _visit: &pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
+                Ok(())
+            }
+        }
+    };
+    ($name:ty { $($fields:ident),* }) => {
+        impl crate::py_gc::PyGcTraverse for $name {
+            fn py_gc_traverse(&self, visit: &pyo3::PyVisit<'_>) -> Result<(), pyo3::PyTraverseError> {
+                self.validator.read_arc().py_gc_traverse(visit)?;
+                $(self.$fields.py_gc_traverse(visit)?;)*
+                Ok(())
+            }
+        }
+    };
+}

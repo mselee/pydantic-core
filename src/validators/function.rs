@@ -1,3 +1,6 @@
+use parking_lot::RwLock;
+use std::sync::Arc;
+
 use pyo3::exceptions::{PyAssertionError, PyAttributeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyString};
@@ -68,7 +71,7 @@ macro_rules! impl_build {
                     validator.get_name()
                 );
                 Ok(Self {
-                    validator: Box::new(validator),
+                    validator: Arc::from(RwLock::new(validator)),
                     func: func_info.function,
                     config: match config {
                         Some(c) => c.into(),
@@ -86,11 +89,7 @@ macro_rules! impl_build {
 
 macro_rules! impl_validator {
     ($name:ident) => {
-        impl_py_gc_traverse!($name {
-            validator,
-            func,
-            config
-        });
+        impl_py_gc_traverse_with_validator!($name { func, config });
 
         impl Validator for $name {
             fn validate<'s, 'data>(
@@ -101,8 +100,11 @@ macro_rules! impl_validator {
                 definitions: &'data Definitions<CombinedValidator>,
                 recursion_guard: &'s mut RecursionGuard,
             ) -> ValResult<'data, PyObject> {
-                let validate =
-                    move |v: &'data PyAny, e: &Extra| self.validator.validate(py, v, e, definitions, recursion_guard);
+                let validate = move |v: &'data PyAny, e: &Extra| {
+                    self.validator
+                        .read_arc_recursive()
+                        .validate(py, v, e, definitions, recursion_guard)
+                };
                 self._validate(validate, py, input.to_object(py).into_ref(py), extra)
             }
             fn validate_assignment<'s, 'data: 's>(
@@ -116,8 +118,15 @@ macro_rules! impl_validator {
                 recursion_guard: &'s mut RecursionGuard,
             ) -> ValResult<'data, PyObject> {
                 let validate = move |v: &'data PyAny, e: &Extra| {
-                    self.validator
-                        .validate_assignment(py, v, field_name, field_value, e, definitions, recursion_guard)
+                    self.validator.read_arc_recursive().validate_assignment(
+                        py,
+                        v,
+                        field_name,
+                        field_value,
+                        e,
+                        definitions,
+                        recursion_guard,
+                    )
                 };
                 self._validate(validate, py, obj, extra)
             }
@@ -129,6 +138,7 @@ macro_rules! impl_validator {
             ) -> bool {
                 if ultra_strict {
                     self.validator
+                        .read_arc_recursive()
                         .different_strict_behavior(definitions, ultra_strict)
                 } else {
                     true
@@ -140,7 +150,7 @@ macro_rules! impl_validator {
             }
 
             fn complete(&mut self, definitions: &DefinitionsBuilder<CombinedValidator>) -> PyResult<()> {
-                self.validator.complete(definitions)
+                self.validator.write_arc().complete(definitions)
             }
         }
     };
@@ -148,7 +158,7 @@ macro_rules! impl_validator {
 
 #[derive(Debug, Clone)]
 pub struct FunctionBeforeValidator {
-    validator: Box<CombinedValidator>,
+    validator: Arc<RwLock<CombinedValidator>>,
     func: PyObject,
     config: PyObject,
     name: String,
@@ -181,7 +191,7 @@ impl_validator!(FunctionBeforeValidator);
 
 #[derive(Debug, Clone)]
 pub struct FunctionAfterValidator {
-    validator: Box<CombinedValidator>,
+    validator: Arc<RwLock<CombinedValidator>>,
     func: PyObject,
     config: PyObject,
     name: String,
@@ -288,7 +298,7 @@ impl Validator for FunctionPlainValidator {
 
 #[derive(Debug, Clone)]
 pub struct FunctionWrapValidator {
-    validator: Box<CombinedValidator>,
+    validator: Arc<RwLock<CombinedValidator>>,
     func: PyObject,
     config: PyObject,
     name: String,
@@ -310,7 +320,7 @@ impl BuildValidator for FunctionWrapValidator {
         let function_info = destructure_function_schema(schema)?;
         let hide_input_in_errors: bool = config.get_as(intern!(py, "hide_input_in_errors"))?.unwrap_or(false);
         Ok(Self {
-            validator: Box::new(validator),
+            validator: Arc::from(RwLock::new(validator)),
             func: function_info.function.clone(),
             config: match config {
                 Some(c) => c.into(),
@@ -343,11 +353,7 @@ impl FunctionWrapValidator {
     }
 }
 
-impl_py_gc_traverse!(FunctionWrapValidator {
-    validator,
-    func,
-    config
-});
+impl_py_gc_traverse_with_validator!(FunctionWrapValidator { func, config });
 
 impl Validator for FunctionWrapValidator {
     fn validate<'s, 'data>(
@@ -362,7 +368,7 @@ impl Validator for FunctionWrapValidator {
             validator: InternalValidator::new(
                 py,
                 "ValidatorCallable",
-                &self.validator,
+                &self.validator.read_arc_recursive(),
                 definitions,
                 extra,
                 recursion_guard,
@@ -391,7 +397,7 @@ impl Validator for FunctionWrapValidator {
             validator: InternalValidator::new(
                 py,
                 "AssignmentValidatorCallable",
-                &self.validator,
+                &self.validator.read_arc_recursive(),
                 definitions,
                 extra,
                 recursion_guard,
@@ -409,7 +415,9 @@ impl Validator for FunctionWrapValidator {
         ultra_strict: bool,
     ) -> bool {
         if ultra_strict {
-            self.validator.different_strict_behavior(definitions, ultra_strict)
+            self.validator
+                .read_arc_recursive()
+                .different_strict_behavior(definitions, ultra_strict)
         } else {
             true
         }
@@ -420,7 +428,7 @@ impl Validator for FunctionWrapValidator {
     }
 
     fn complete(&mut self, definitions: &DefinitionsBuilder<CombinedValidator>) -> PyResult<()> {
-        self.validator.complete(definitions)
+        self.validator.write_arc().complete(definitions)
     }
 }
 

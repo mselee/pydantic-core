@@ -269,6 +269,7 @@ dependencies = [
  "idna",
  "mimalloc",
  "num-bigint",
+ "parking_lot",
  "pyo3",
  "pyo3-build-config",
  "python3-dll-a",
